@@ -211,8 +211,8 @@ def build_prompt(query, contexts):
     """Build prompt with retrieved context."""
     if not contexts:
         return f"""
-<role>You are a helpful assistant that answers questions about company information.</role>
-<instructions>Answer the question based on your general knowledge. If you don't know, say so.</instructions>
+<role>Ты — ассистент, который отвечает на вопросы по корпоративной документации.</role>
+<instructions>Отвечай на вопрос на том же языке, на котором он задан. Если не знаешь ответа — честно скажи об этом.</instructions>
 
 <query>
 {query}
@@ -222,13 +222,18 @@ def build_prompt(query, contexts):
 """
 
     context_text = "\n\n".join(
-        f"[Source: {c['source']}]\n{c['text']}"
+        f"[Источник: {c['source']}]\n{c['text']}"
         for c in contexts
     )
 
     return f"""
-<role>You are a helpful assistant that answers questions about company information.</role>
-<instructions>Answer the question ONLY based on the context provided below. If the answer is not in the context, say "I don't have that information in the knowledge base."</instructions>
+<role>Ты — ассистент, который отвечает на вопросы по корпоративной документации.</role>
+<instructions>
+Отвечай на вопрос ТОЛЬКО на основе контекста ниже.
+Отвечай на том же языке, на котором задан вопрос.
+Если ответа в контексте нет — скажи: «В базе знаний нет информации по этому вопросу.»
+В конце ответа кратко перечисли использованные источники.
+</instructions>
 
 <context>
 {context_text}

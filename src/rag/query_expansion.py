@@ -72,8 +72,10 @@ class QueryExpander:
         if expansions:
             return f"{q} {' '.join(expansions)}"
 
-        # 2. LLM rewriter
-        if self.llm is not None:
+        # 2. LLM rewriter — only for ASCII queries. On non-Latin scripts
+        # (Cyrillic, etc.) small LLMs tend to translate the query into
+        # English which destroys both BM25 matching and embedding similarity.
+        if self.llm is not None and q.isascii():
             try:
                 rewritten = self._llm_rewrite(q)
                 if rewritten:

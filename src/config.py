@@ -18,7 +18,7 @@ CHUNKS_PATH = "chunks.pkl"
 # Ollama configuration (env-overridable so Docker compose can point to the
 # 'ollama' service container instead of localhost).
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:0.6b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 
 # RAG retrieval configuration
 TOP_K = 5
