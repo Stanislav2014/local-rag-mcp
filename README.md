@@ -1,364 +1,220 @@
-# Local RAG/MCP Knowledge Base Assistant
+# Local RAG / MCP Assistant — Advanced Search Pipeline
 
-# 📋 The Problem
+Локальный (offline-friendly) ассистент по корпоративной базе знаний: отвечает
+на вопросы по документации, используя **RAG** (Retrieval-Augmented Generation)
+и **MCP** (Model Context Protocol) для динамического доступа к файлам.
 
-- **Growing Documentation**: Knowledge scattered across files
-- **Information Retrieval**: Hard to find answers without keywords
-- **Privacy Concerns**: Cloud solutions may not comply with policies
+В этой ветке базовый векторный поиск расширен до **Advanced Search Pipeline**:
+*Query Expansion → Hybrid Search (BM25 + Vector, RRF) → Cross-Encoder Reranker*.
 
-```
-Users → Search → Answer = 😫
-```
+> Все компоненты работают локально: эмбеддинги — `sentence-transformers`,
+> LLM — `ollama`, никаких внешних API.
 
-# ✨ The Solution
+---
 
-A **local, intelligent Q&A system** using:
+## Описание проекта
 
-- **RAG**: Semantic search over documentation
-- **MCP**: Dynamic document access
-- **Local LLM**: Privacy-preserving answers (Ollama)
+| | |
+|---|---|
+| **Назначение** | Q&A по корпоративной/технической документации (`.md`, `.txt`, `.pdf`, `.docx`) |
+| **Кому полезно** | Команды поддержки, инженеры, security-аналитики — все, кому нужен быстрый поиск по большому корпусу документов без отправки данных в облако |
+| **Главное преимущество** | Полностью локальный pipeline + улучшенная точность поиска на «технических» запросах (HTTP-коды, аббревиатуры безопасности и т. п.) |
 
-# ✨ Key Benefits
+---
 
-- ✅ Privacy-first (runs locally)
-- ✅ No API costs
-- ✅ Fast semantic search
-- ✅ Intelligent document access
-- ✅ Complete data control
-
-# 🏗️ Architecture - Top Level
+## Архитектура
 
 ```
-┌──────────────────────┐
-│   User Interface     │ (CLI)
-└──────────┬───────────┘
-           │
-     ┌─────┴─────┐
-     ▼           ▼
-  [RAG]       [MCP]
-   Query      Tools
-     │           │
-     └─────┬─────┘
-           ▼
-    [Ollama LLM]
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          USER (CLI / MCP client)                        │
+└──────────────────┬──────────────────────────────────────┬───────────────┘
+                   │                                      │
+                   ▼                                      ▼
+        ┌────────────────────┐                ┌──────────────────────┐
+        │ CompanyKBAssistant │                │  MCP Server (stdio)  │
+        │   src/assistant.py │                │   src/mcp/server.py  │
+        └─────────┬──────────┘                │  read_document       │
+                  │                           │  list_documents      │
+                  │                           │  search_documents    │
+                  │                           └──────────────────────┘
+                  ▼
+   ┌────────────────────────────────────────┐
+   │      Advanced Search Pipeline          │
+   │  src/rag/query.retrieve()              │
+   │                                        │
+   │  ┌──────────────────────────────────┐  │
+   │  │ 1. QueryExpander                 │  │
+   │  │   src/rag/query_expansion.py     │  │
+   │  │   • dict (sqli→SQL Injection…)   │  │
+   │  │   • LLM rewrite (ollama)         │  │
+   │  └──────────────┬───────────────────┘  │
+   │                 ▼                      │
+   │  ┌──────────────────────────────────┐  │
+   │  │ 2. HybridSearchEngine            │  │
+   │  │   src/rag/search_engine.py       │  │
+   │  │   • BM25Okapi (rank_bm25)        │  │
+   │  │   • FAISS vector search          │  │
+   │  │   • RRF / Weighted fusion        │  │
+   │  └──────────────┬───────────────────┘  │
+   │                 ▼                      │
+   │  ┌──────────────────────────────────┐  │
+   │  │ 3. CrossEncoderReranker          │  │
+   │  │   src/rag/reranker.py            │  │
+   │  │   • BAAI/bge-reranker-base       │  │
+   │  │   • lazy load + fallback         │  │
+   │  └──────────────┬───────────────────┘  │
+   │                 ▼                      │
+   │       top-K chunks → LLM prompt        │
+   └────────────────┬───────────────────────┘
+                    ▼
+           ┌────────────────┐
+           │  Ollama (LLM)  │
+           │  qwen3:0.6b    │
+           └────────────────┘
 ```
 
-# 🏗️ Architecture - Storage
+Полный разбор в [docs/impact-analysis.md](docs/impact-analysis.md),
+спецификация — в [docs/search-spec.md](docs/search-spec.md),
+дамп взаимодействий — в [docs/context-dump.md](docs/context-dump.md).
+
+---
+
+## Подход
+
+### 1. Проверяемость («observability over magic»)
+Каждый этап pipeline **логирует score** для каждого чанка. Когда LLM ошибается,
+можно сразу увидеть: дал ли retrieval мусор, перепутал ли реранкер, или модель
+проигнорировала контекст.
+
+### 2. Постепенная деградация (graceful fallback)
+- Если cross-encoder не скачался → берём top-K по RRF.
+- Если ollama не поднята → query expansion возвращает оригинальный запрос.
+- Если BM25 / FAISS отдали 0 — pipeline возвращает что есть, не падает.
+
+Каждый этап включается/выключается флагом в `src/config.py`, поэтому A/B-сравнение
+делается без правки кода.
+
+### 3. TDD
+Сначала тесты, потом реализация. Юнит-тесты для каждого модуля (тесты не зависят
+от FAISS / sentence-transformers — vector search инжектится как callable),
+плюс интеграционный тест на полный pipeline без тяжёлых зависимостей.
+
+### 4. Сохранение контракта MCP
+`src/mcp/server.py` (`read_document`, `list_documents`, `search_documents`)
+**не модифицируется**. Внешние клиенты MCP продолжают работать как раньше.
+
+---
+
+## Структура проекта
 
 ```
-┌────────────────┐
-│  FAISS Index   │ Vector Database
-│  + MCP Tools   │
-└────────┬───────┘
-         │
-    ┌────▼─────┐
-    │   docs/  │
-    │directory │
-    └──────────┘
+local-rag-mcp/
+├── README.md                       ← этот файл
+├── Dockerfile                      ← образ приложения
+├── docker-compose.yml              ← приложение + ollama
+├── docs/
+│   ├── impact-analysis.md          ← legacy data flow + найденные проблемы
+│   ├── search-spec.md              ← спецификация Advanced Pipeline
+│   └── context-dump.md             ← как компоненты взаимодействуют
+├── src/
+│   ├── README.md                   ← старая инструкция по запуску
+│   ├── config.py                   ← вся конфигурация (флаги pipeline)
+│   ├── main.py                     ← интерактивный CLI
+│   ├── assistant.py                ← оркестрация RAG + MCP
+│   ├── rag/
+│   │   ├── ingest.py               ← загрузка txt/md/pdf/docx
+│   │   ├── chunk.py                ← токенизация + окно/overlap
+│   │   ├── embed.py                ← sentence-transformers
+│   │   ├── build_index.py          ← FAISS индексирование
+│   │   ├── query.py                ← retrieve() = pipeline + ask_llm()
+│   │   ├── search_engine.py        ← BM25 + RRF + HybridSearchEngine
+│   │   ├── query_expansion.py      ← QueryExpander (dict + LLM)
+│   │   └── reranker.py             ← CrossEncoderReranker
+│   ├── mcp/
+│   │   ├── server.py               ← FastMCP tools (НЕ менять)
+│   │   └── client.py               ← stdio JSON-RPC клиент
+│   ├── docs/                       ← база знаний (документы)
+│   └── requirements.txt
+└── tests/
+    ├── conftest.py                 ← фикстуры + sys.path
+    ├── unit/
+    │   ├── test_search_engine.py   ← BM25 / RRF / HybridSearchEngine
+    │   ├── test_query_expansion.py ← QueryExpander
+    │   └── test_reranker.py        ← CrossEncoderReranker
+    └── integration/
+        └── test_pipeline.py        ← полный pipeline без FAISS (моки)
 ```
 
-# 🔍 RAG Pipeline
+---
 
-1. Document Loading → Read .md, .txt, .pdf, .docx
-2. Chunking → Split into 700-char chunks
-3. Embedding → Use SentenceTransformers
-4. Indexing → Build FAISS vector index
-5. Query → Retrieve top 5 similar chunks
-6. Prompt Building → Create context-aware prompt
-7. LLM Generation → Get answer from model
+## Тех. стек
 
-# 🔍 Why FAISS?
+| Слой | Технология |
+|---|---|
+| Язык | Python 3.12 |
+| Эмбеддинги | `sentence-transformers` / `all-MiniLM-L6-v2` (384-dim) |
+| Векторный индекс | `faiss-cpu` (`IndexFlatIP` + `normalize_L2` ≡ cosine) |
+| Лексический поиск | `rank_bm25` (`BM25Okapi`) |
+| Fusion | RRF (Reciprocal Rank Fusion), Weighted Sum (опционально) |
+| Reranker | `BAAI/bge-reranker-base` через `sentence_transformers.CrossEncoder` |
+| LLM | Ollama, по умолчанию `qwen3:0.6b` (можно любой) |
+| MCP | `fastmcp` (stdio JSON-RPC) |
+| Документы | `pypdf`, `python-docx` |
+| CLI / pretty-print | `rich` |
+| Тесты | `pytest`, `pytest-asyncio`, `unittest.mock` |
+| Контейнеризация | Docker + Docker Compose (приложение + сервис ollama) |
 
-- Fast vector similarity search
-- Lightweight and memory-efficient
-- No external dependencies
-- Perfect for local deployments
-- Millions of vectors supported
+---
 
-# 🔧 MCP - Model Context Protocol
+## Быстрый старт
 
-MCP provides **standardized interface** for LLM tool access:
-
-```python
-read_document(file_path)
-list_documents()
-search_documents(query)
-```
-
-# 🔧 MCP Benefits
-
-- Tool Use by LLM
-- Real-time document access
-- Standardized interface
-- Easy to extend
-- Local tool execution
-
-# 💻 Tech Stack
-
-```
-Language:      Python 3.10+
-Vector DB:     FAISS
-Embeddings:    SentenceTransformers
-LLM:           Ollama (local)
-MCP:           FastMCP
-```
-
-# 📁 Project Structure
-
-```
-src/
-├── config.py           Configuration
-├── main.py             CLI entry point
-├── assistant.py        Main orchestrator
-├── rag/
-│   ├── ingest.py      Load documents
-│   ├── chunk.py       Split text
-│   ├── embed.py       Generate embeddings
-│   ├── build_index.py Build FAISS index
-│   └── query.py       Retrieve & generate
-├── mcp/
-│   ├── server.py      MCP tool definitions
-│   └── client.py      MCP client wrapper
-└── docs/              Documentation
-```
-
-# 🚀 Index Building (Setup)
-
-```
-$ python main.py build-index
-
-1. Load documents
-  ↓
-2. Split into chunks
-  ↓
-3. Generate embeddings
-  ↓
-4. Build FAISS index
-  ↓
-5. Save files
-```
-
-# 🚀 Query Processing (Runtime)
-
-```
-User Question
-  ↓
-Embed question
-  ↓
-Search FAISS → Top 5 chunks
-  ↓
-LLM decides: Use MCP tools?
-  ↓
-Build prompt + context
-  ↓
-Call Ollama
-  ↓
-Return answer + sources
-```
-
-# ✨ Core Features
-
-- **Semantic Search**: Find by meaning, not keywords
-- **Multi-format**: .md, .txt, .pdf, .docx files
-- **Source Attribution**: Shows document sources
-- **MCP Tools**: LLM can read full documents
-- **No External APIs**: Runs locally only
-- **Fast Retrieval**: Sub-second search
-
-# ⚙️ Configuration Options
-
-```python
-CHUNK_SIZE = 700
-CHUNK_OVERLAP = 100
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
-OLLAMA_MODEL = "qwen3:0.6b"
-TOP_K = 5
-```
-
-# 🎬 Live Demo - Starting
+### Локально
 
 ```bash
-$ python main.py
+# Виртуальное окружение
+virtualenv .venv && source .venv/bin/activate
+pip install -r src/requirements.txt
+
+# Тесты
+pytest tests -q
+
+# Запуск (требует поднятой ollama: см. ниже)
+cd src && python main.py
 ```
 
-Output:
-```
-🤖 Company Knowledge Base
-Ask questions about documentation
-Type 'exit' to stop
-```
-
-# 🎬 Demo - Query 1
-
-```
-❓ What are company values?
-
-🤖 Innovation, integrity, collaboration
-
-📚 Sources:
-  • Loan Rangers Team.md
-  • Info Security.md
-```
-
-# 🎬 Demo - Query 2
-
-```
-❓ What documents do we have?
-
-🤖 [Uses MCP list_documents]
-  • Loan Rangers Team.md
-  • Information Security.md
-  • Services.md
-```
-
-# 🎬 Demo - Query 3
-
-```
-❓ Full security policy?
-
-🤖 [Uses MCP read_document]
-[Full document content...]
-```
-
-# 🔐 Security - Local vs Cloud
-
-**Cloud**: Data → Internet → Server
-- ⚠️ Network transmission
-- ⚠️ External storage
-- ⚠️ Subscription costs
-
-**Local**: Data → Local System
-- ✅ No transmission
-- ✅ Local storage only
-- ✅ No costs
-
-# 🔐 Implementation Safeguards
-
-- **MCP Sandbox**: Prevents path traversal
-- **Local Storage**: Documents stay on device
-- **No Telemetry**: No tracking
-- **Offline Ready**: Works without internet
-
-# ⚡ Performance Benchmarks
-
-```
-Index Building:   ~30s (one-time)
-Query Embedding:  ~50ms
-FAISS Search:     ~5ms
-LLM Generation:   2-5s
-Total Cycle:      2-6s
-```
-
-# ⚡ Tuning for Speed
-
-```python
-# Faster (smaller model):
-OLLAMA_MODEL = "qwen3:0.6b"
-
-# Faster retrieval:
-TOP_K = 3
-CHUNK_SIZE = 500
-```
-
-# 🚢 Deployment - Single Machine
-
-```
-1. Install Ollama & Python deps
-2. Copy docs/ to server
-3. Build index
-4. Run with nohup
-
-$ nohup python main.py > log &
-```
-
-# 🚢 Scaling - Option 1: FastAPI
-
-```
-[HTTP Clients]			[HTTP Clients + Webllm]
-       ↓        						 ↓
-   [FastAPI]     				 [FastAPI]
-       ↓         					 ↓
-[Ollama + FAISS]      			  [FAISS]
-```
-
-# 🚢 Scaling - Option 2: Distributed
-
-```
-[Clients] → [Load Balancer]
-             ↓
-      [Multiple Retrievers]
-```
-
-# 🚢 Storage Scaling
-
-```
-Docs     Index      Build
-10 MB    ~2 MB      ~5s
-100 MB   ~20 MB     ~30s
-1 GB     ~200 MB    ~5min
-```
-
-# 🔮 Phase 2: Enhanced Features
-
-- ☐ Web UI (Streamlit)
-- ☐ API endpoints
-- ☐ Multi-language support
-- ☐ Document versioning
-- ☐ Fine-tuned embeddings
-
-# 🔮 Phase 3: Advanced
-
-- ☐ Conversation memory
-- ☐ Multi-hop reasoning
-- ☐ Metadata filtering
-- ☐ Feedback loop
-- ☐ Analytics dashboard
-
-# 🔮 Phase 4: Enterprise
-
-- ☐ User authentication
-- ☐ Audit logging
-- ☐ Role-based access
-- ☐ LLM fine-tuning
-- ☐ Cost analysis
-
-# 📊 Why This Works
-
-| Aspect | Traditional | Our RAG |
-|--------|---|---|
-| **Understanding** | Keywords | Semantic |
-| **Answers** | Documents | Direct |
-| **Privacy** | Cloud | Local |
-| **Cost** | Subscription | One-time |
-| **Speed** | Slow | Sub-second |
-
-# ✅ What You Have Now
-
-- Local privacy-first knowledge base
-- Fast semantic search (FAISS)
-- Intelligent tool use (MCP)
-- Maintainable Python code
-- Foundation for enterprise features
-
-# 🙋 Quick Reference
+### Docker (рекомендуемый путь)
 
 ```bash
-# Build index
-python main.py build-index
-
-# Run interactively
-python main.py
-
-# Check config
-cat config.py
+docker compose up --build
+# приложение поднимется в контейнере app, ollama — в контейнере ollama
+# затем войти в контейнер для интерактива:
+docker compose exec app python main.py
 ```
 
-# 📚 Resources
+При первом запуске необходимо сделать `docker compose exec ollama ollama pull qwen3:0.6b`.
 
-- **Code**: MobilaName/local-rag-mcp
-- **FAISS**: facebook/faiss
-- **Ollama**: ollama.ai
-- **FastMCP**: github.com/jlowin/fastmcp
-- **Transformers**: huggingface.co
+См. [docs/context-dump.md](docs/context-dump.md) — там подробно про взаимодействия.
 
-**Thank You!**
+---
+
+## Конфигурация Pipeline
+
+Все ключи живут в `src/config.py`:
+
+```python
+HYBRID_ENABLED          = True       # включить/выключить гибрид
+FUSION_STRATEGY         = "rrf"      # "rrf" | "weighted"
+RRF_K                   = 60
+N_VEC                   = 50         # сколько кандидатов от FAISS
+N_BM25                  = 50         # сколько кандидатов от BM25
+N_HYBRID                = 20         # вход реранкера
+
+RERANKER_ENABLED        = False      # True когда модель скачана
+RERANKER_MODEL          = "BAAI/bge-reranker-base"
+
+QUERY_EXPANSION_ENABLED = True
+QUERY_EXPANSION_MAX_LEN = 4
+```
+
+Любой флаг `False` — соответствующий уровень отключается, pipeline деградирует
+до предыдущего поведения.

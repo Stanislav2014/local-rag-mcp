@@ -37,17 +37,18 @@ def ingest_documents():
         return documents
 
     for path in base_dir.rglob("*"):
-        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
-            print(f"Loading: {path}")
-            try:
-                documents.append({
-                    "path": str(path),
-                    "text": load_document(path)
-                })
-            except Exception as e:
-                print(f"Error loading {path}: {e}")
-        else:
-            [documents.append(doc) for doc in ingest_documents(path)]
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+            continue
+        print(f"Loading: {path}")
+        try:
+            documents.append({
+                "path": str(path),
+                "text": load_document(path),
+            })
+        except Exception as e:
+            print(f"Error loading {path}: {e}")
 
     return documents
 

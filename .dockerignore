@@ -1,0 +1,12 @@
+.git
+.idea
+.venv
+.pytest_cache
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.faiss
+*.pkl
+docs/superpowers/
+README.md.bak

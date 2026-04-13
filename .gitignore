@@ -216,10 +216,13 @@ site/
 .AppleDouble
 .LSOverride
 Icon
-docs/*.md
-docs/*.txt
-docs/*.pdf
-docs/*.docx
+
+# Knowledge base documents (live in src/docs, not project docs/)
+src/docs/*.md
+src/docs/*.txt
+src/docs/*.pdf
+src/docs/*.docx
+!src/docs/.gitkeep
 
 # Windows
 $RECYCLE.BIN/
@@ -239,6 +242,3 @@ $RECYCLE.BIN/
 
 llm/
 python-rag/
-
-/**.md
-/**.txt
